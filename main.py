@@ -7,30 +7,89 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
+from hilbertcurve.hilbertcurve import HilbertCurve
+from math import log2
+import numpy as np
+
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, 1)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1)
+        self.conv1 = nn.Conv2d(1, 32, 3, 1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, 3, 1, padding=1)
         self.dropout1 = nn.Dropout(0.25)
         self.dropout2 = nn.Dropout(0.5)
-        self.fc1 = nn.Linear(9216, 128)
+        self.fc1 = nn.Linear(16384, 128)
         self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
         x = self.conv1(x)
         x = F.relu(x)
+
         x = self.conv2(x)
         x = F.relu(x)
+
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
         x = torch.flatten(x, 1)
+
         x = self.fc1(x)
         x = F.relu(x)
         x = self.dropout2(x)
+
         x = self.fc2(x)
         output = F.log_softmax(x, dim=1)
+
+        return output
+
+
+class HilbertNet(nn.Module):
+    def __init__(self):
+        super(HilbertNet, self).__init__()
+        self.conv1 = nn.Conv1d(1, 32, 3, 1, padding=1)
+        self.conv2 = nn.Conv1d(32, 64, 3, 1, padding=1, dilation=1)
+        self.dropout1 = nn.Dropout(0.25)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc1 = nn.Linear(16384, 128)
+        # self.fc1 = nn.Linear(8192, 128)
+        # self.fc1 = nn.Linear(4096, 128)
+        self.fc2 = nn.Linear(128, 10)
+
+        h, w = 32, 32
+        N = 2
+        p = int(log2(h * w))
+        hilbert_curve = HilbertCurve(p, N)
+        self.indexes = np.transpose([
+            hilbert_curve.coordinates_from_distance(ii)
+            for ii in range(2**p)
+        ])
+
+    def forward(self, x):
+        x_rolled = x[:, :, self.indexes[0], self.indexes[1]]
+        x_rolled_t = x[:, :, self.indexes[1], self.indexes[0]]
+
+        x = torch.cat([x_rolled, x_rolled_t], axis=-1)
+
+        # x = torch.flatten(x, 2, 3)
+
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = F.max_pool1d(x, 2)
+
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = F.max_pool1d(x, 4)
+
+        x = self.dropout1(x)
+        x = torch.flatten(x, 1)
+
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+
+        x = self.fc2(x)
+        output = F.log_softmax(x, dim=1)
+
         return output
 
 
@@ -117,6 +176,7 @@ def main():
         test_kwargs.update(cuda_kwargs)
 
     transform = transforms.Compose([
+        transforms.Pad(2),
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
@@ -129,7 +189,8 @@ def main():
     train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
-    model = Net().to(device)
+    # model = Net().to(device)
+    model = HilbertNet().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
